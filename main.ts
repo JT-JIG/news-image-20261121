@@ -1,46 +1,68 @@
-// news-image-20261121 entry: hand the day's image to the gate.
+// news-image-20261121 — entry runner.
 //
-// The image is the entry — a 1024x1024 infographic summing up Saturday
-// 21 November 2026's world news, drawn from the day's verified reports:
-// the Russian barrage on Ukraine and the missiles that landed in Poland
-// (with NATO's Rutte in Warsaw), the Claude-aided Riemann proof passing
-// independent Lean checks, the AI stock sell-off, COP31 running past its
-// deadline, the capture of 'El Chapo Isidro' in Mexico, Iran's strike on
-// Bahrain, and GTA VI's $3.79bn day one.
-// This program's only job is to place entry.png into /output where the
-// gate reads it. It checks the file first: it must be a PNG or a JPEG
-// by its first bytes and at most 1 MiB, or the gate refuses it — so a
-// bad file fails here, loudly, instead of silently there.
-//
-// Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
-//   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
+// Takes entry.png from beside this file, checks it is a genuine PNG or
+// JPEG no bigger than 1 MiB, then places a copy where the grader looks:
+// /output/entry.png, or $MAKEFUN_OUTPUT_DIR/entry.png when that variable
+// is set. Anything else fails loudly with a plain error message.
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { copyFileSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const OUTPUT_DIR = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
-const MAX_BYTES = 1048576; // 1 MiB, the gate's limit
+const MAX_BYTES = 1_048_576;
+const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+const JPEG_MAGIC = [0xff, 0xd8, 0xff];
 
-const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-const JPEG_MAGIC = Buffer.from([0xff, 0xd8, 0xff]);
-
-function fail(message: string): never {
-  console.error(message);
-  process.exit(1);
+function sniffFormat(head: Uint8Array): "PNG" | "JPEG" {
+  const matches = (magic: number[]) =>
+    magic.every((byte, i) => head[i] === byte);
+  if (matches(PNG_MAGIC)) return "PNG";
+  if (matches(JPEG_MAGIC)) return "JPEG";
+  const seen = [...head.subarray(0, 8)]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join(" ");
+  throw new Error(`entry.png is neither PNG nor JPEG (first bytes: ${seen})`);
 }
 
-const src = join(fileURLToPath(new URL('.', import.meta.url)), 'entry.png');
-if (!existsSync(src)) fail('entry.png not found beside main.ts');
+function main(): void {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const source = join(here, "entry.png");
 
-const size = statSync(src).size;
-if (size > MAX_BYTES) fail(`entry.png is ${size} bytes, over the 1 MiB limit`);
+  let info;
+  try {
+    info = statSync(source);
+  } catch {
+    throw new Error(`entry.png not found beside main.ts (${source})`);
+  }
+  if (info.size > MAX_BYTES) {
+    throw new Error(
+      `entry.png is ${info.size} bytes, over the 1 MiB (${MAX_BYTES} byte) limit`,
+    );
+  }
 
-const head = readFileSync(src).subarray(0, 8);
-const isPng = head.equals(PNG_MAGIC);
-const isJpeg = head.subarray(0, 3).equals(JPEG_MAGIC);
-if (!isPng && !isJpeg) fail('entry.png is neither a PNG nor a JPEG by its first bytes');
+  const format = sniffFormat(readFileSync(source).subarray(0, 8));
 
-mkdirSync(OUTPUT_DIR, { recursive: true });
-copyFileSync(src, join(OUTPUT_DIR, 'entry.png'));
-console.log(`entry image: ${size} bytes, ${isPng ? 'PNG' : 'JPEG'}`);
+  const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? "/output";
+  mkdirSync(outDir, { recursive: true });
+  const dest = join(outDir, "entry.png");
+  copyFileSync(source, dest);
+
+  // Make sure the copy actually landed intact before claiming success.
+  const copied = statSync(dest);
+  if (copied.size !== info.size) {
+    throw new Error(
+      `copy failed: ${dest} is ${copied.size} bytes, expected ${info.size}`,
+    );
+  }
+
+  console.log(
+    `Wrote ${dest} — ${format} image, ${info.size} bytes, copy verified`,
+  );
+}
+
+try {
+  main();
+} catch (err) {
+  console.error(`error: ${err instanceof Error ? err.message : String(err)}`);
+  process.exitCode = 1;
+}
